@@ -177,11 +177,27 @@ impl Dataset {
         }
         Ok(Transaction::new(self))
     }
+
+    pub fn maybe_transaction(&mut self, func: impl Fn(&Dataset) -> Result<()>) -> Result<()> {
+        let force = 0; 		// since this is for speed
+        let rv = unsafe { gdal_sys::GDALDatasetStartTransaction(self.c_dataset(), force) };
+        let res = func(self);
+        if rv == OGRErr::OGRERR_NONE {
+            let rv = unsafe { gdal_sys::GDALDatasetCommitTransaction(self.c_dataset()) };
+            if rv != OGRErr::OGRERR_NONE {
+                return Err(GdalError::OgrError {
+                    err: rv,
+                    method_name: "GDALDatasetCommitTransaction",
+                });
+            }
+        }
+        res
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::test_utils::{fixture, open_gpkg_for_update};
+    use crate::test_utils::{fixture, open_dataset_for_update, open_gpkg_for_update};
     use crate::vector::{Geometry, LayerAccess};
     use crate::Dataset;
 
@@ -240,5 +256,31 @@ mod tests {
     fn test_start_transaction_unsupported() {
         let mut ds = Dataset::open(fixture("roads.geojson")).unwrap();
         assert!(ds.start_transaction().is_err());
+    }
+
+    #[test]
+    fn test_maybe_transaction() {
+        let (_temp_path, mut ds) = open_gpkg_for_update(&fixture("poly.gpkg"));
+        let orig_feature_count = ds.layer(0).unwrap().feature_count();
+
+        let res = ds.maybe_transaction(|d| {
+            let mut layer = d.layer(0).unwrap();
+            layer.create_feature(polygon())
+        });
+        assert!(res.is_ok());
+        assert_eq!(ds.layer(0).unwrap().feature_count(), orig_feature_count + 1);
+    }
+
+    #[test]
+    fn test_maybe_transaction_unsupported() {
+        let (_temp_path, mut ds) = open_dataset_for_update(&fixture("roads.geojson"));
+        let orig_feature_count = ds.layer(0).unwrap().feature_count();
+
+        let res = ds.maybe_transaction(|d| {
+            let mut layer = d.layer(0).unwrap();
+            layer.create_feature(polygon())
+        });
+        assert!(res.is_ok());
+        assert_eq!(ds.layer(0).unwrap().feature_count(), orig_feature_count + 1);
     }
 }
